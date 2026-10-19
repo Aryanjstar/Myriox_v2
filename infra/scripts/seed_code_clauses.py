@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Embeds docs/building_codes/ada_clauses.json via Azure OpenAI and loads them into the
-Cosmos DB `codeClauses` vector container. Run from apps/api's venv (needs azure-cosmos +
-langchain-openai already installed there).
+Cosmos DB `codeClauses` vector container. Run from the Simulation Service virtual environment
+(which supplies azure-cosmos and langchain-openai).
 
 Usage:
-    cd apps/api && source .venv/bin/activate
+    cd apps/simulation-service && source .venv/bin/activate
     python ../../infra/scripts/seed_code_clauses.py
 """
 
@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps" / "api"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps" / "simulation-service"))
 
 from app.core.config import get_settings  # noqa: E402
 from app.services.cosmos import code_clauses_container  # noqa: E402

@@ -1,167 +1,133 @@
 # Myriox
 
-**Built with OpenAI Codex** · OpenAI × NamasteDev Hackathon, July 2026
+**Autonomous, multi-agent site and flow simulation for accessibility, compliance, and bottleneck analysis.**
 
-Myriox is a multi-service simulation platform for stress-testing site plans and user flows
-before construction. It models real human intent with persona-driven agents, detects
-bottlenecks, and produces cited accessibility and compliance findings from the walk itself.
+Myriox lets teams turn a floor plan into a navigable grid, send distinct user personas through it, and inspect where routes fail in practice. It combines LLM-directed movement with deterministic movement validation, then produces a visual bottleneck report and code-grounded accessibility findings.
 
-## At a glance
+[Watch the demo](https://youtu.be/t_e-CtLxn_Q) · [Read the architecture](docs/architecture.md) · [Review the personas](docs/personas.md)
 
-Use Myriox to:
+> Myriox is a prototype decision-support tool. Its compliance output is not a substitute for review by a qualified architect, accessibility specialist, or authority having jurisdiction.
 
-- draw or trace a floor plan (including tracing directly over an uploaded reference image)
-- place doors, ramps, stairs, elevators, and entry and exit points
-- run multiple personas through the layout
-- watch bottlenecks emerge in real time
-- review a compliance report grounded in ADA and IFC clauses
+## What it does
 
-**Try it fast:** the live app ships with a pre-traced demo plan (see `demo/floorplans/`) so
-you can run a simulation immediately without drawing a building from scratch first. Bigger
-plans and larger persona mixes are fully supported, but each agent reasons via a real LLM
-call every tick, so more agents and bigger plans take proportionally longer — see
-"Performance" below.
+- **Create a plan** — paint a grid with walls, doors, ramps, stairs, elevators, service points, entries, exits, and named zones. You can trace over a compressed reference-image overlay.
+- **Model different people** — run a mix of five built-in personas: rushed commuter, wheelchair user, parent with stroller, delivery worker, and elderly visitor.
+- **Simulate movement live** — each active persona uses an Azure OpenAI reasoning step to choose an intended move; a deterministic grid validator enforces map, collision, and mobility constraints.
+- **Find friction** — inspect live positions, bottleneck heat, blocked/stuck behavior, and each agent’s short reasoning trace.
+- **Audit outcomes** — flag narrow routes and doors deterministically, then retrieve relevant ADA/IFC clauses from Cosmos DB vector search to contextualize meaningful struggle points.
 
-### 🎬 Video Walkthrough  
-See Myriox in action!
-
-📽️ Demo Video: https://youtu.be/t_e-CtLxn_Q
-
-## How it works
+## Architecture
 
 ```mermaid
 flowchart LR
-  User[User] --> Web[Web app\nNext.js]
-  Web --> Auth[Auth service\nFastAPI]
-  Web --> Plan[Plan service\nFastAPI]
-  Web <--> Sim[Simulation service\nFastAPI + LangGraph]
-  Auth --> Cosmos[(Cosmos DB)]
-  Plan --> Cosmos
-  Sim --> Cosmos
-  Sim --> Plan
-  Sim --> OpenAI[Azure OpenAI]
+  U[Browser] --> W[Next.js web app]
+  W -->|Sign up / sign in| A[Auth service]
+  W -->|Plan CRUD| P[Plan service]
+  W <-->|Live ticks via WebSocket| S[Simulation service]
+  A --> C[(Azure Cosmos DB)]
+  P --> C
+  S -->|Fetch plan| P
+  S --> C
+  S --> O[Azure OpenAI]
 ```
 
-1. A user signs up or signs in.
-2. The frontend stores the JWT and uses it for API calls.
-3. The plan service saves layouts and persona configuration.
-4. The simulation service loads the plan, runs persona agents, and streams movement over a
-   WebSocket, tick by tick.
-5. The final report combines deterministic geometry checks with retrieved building-code
-   clauses, cited by ID.
+| Component | Responsibility | Local address |
+| --- | --- | --- |
+| `apps/web` | Next.js 16 authoring, simulation, and reporting UI | `http://localhost:3000` |
+| `apps/auth-service` | Email/password signup and login; issues HS256 JWTs | `http://localhost:8030` |
+| `apps/plan-service` | Plan CRUD and the persona catalog | `http://localhost:8010` |
+| `apps/simulation-service` | LangGraph tick loop, WebSocket stream, bottlenecks, and compliance findings | `ws://localhost:8020` |
+| `packages/mcp-plan-server` | Optional MCP tools for reading saved plans and zones | stdio |
 
-## Models
+The three backend services use the same JWT secret. The simulation service reads plans through the plan service and persists runs, ticks, and code clauses in Cosmos DB. See [docs/architecture.md](docs/architecture.md) for the data-flow sequence, Azure resource inventory, and current limitations.
 
-| Purpose | Deployment | Model | Capacity |
-|---|---|---|---|
-| Per-tick agent movement reasoning | `agent-reasoning` | `gpt-5.4-mini` | 150 (GlobalStandard) |
-| End-of-run compliance report synthesis | `report-synthesis` | `gpt-5.4` | 50 (GlobalStandard) |
-| Compliance clause vector search | `text-embedding-3-large` | `text-embedding-3-large` | 100 (Standard) |
+## Simulation flow
 
-`agent-reasoning` stayed on `gpt-5.4-mini` rather than moving to a smaller/faster tier
-(e.g. `gpt-5.4-nano`): once the real bottleneck — a heavily under-provisioned deployment
-quota throttling concurrent per-tick calls — was fixed by raising capacity, per-call latency
-was already low enough (sub-second to ~1.5s per tick in production) that a smaller model
-wouldn't have moved the needle, and `mini` reasons more reliably about mobility-profile
-constraints than `nano` does. Revisit if agent counts grow much larger.
-
-## Performance
-
-Every agent's move is a real Azure OpenAI call, dispatched concurrently across all active
-agents within a tick (not queued one-by-one), and the end-of-run compliance step fans out
-one concurrent call per distinct struggle point rather than looping through them serially.
-Measured against the live deployment after raising Azure OpenAI capacity (see "Models"
-above): a 2-agent run (1 rushed commuter, 1 wheelchair user) on the `library-1885` demo plan
-finished in **~17-19 seconds across ~19-23 ticks**; a 14-agent mix across all five personas on
-the same plan finished in **~45 seconds across 33 ticks**. Bigger, more open plans with more
-agents will still take proportionally longer — this is an inherent tradeoff of giving every
-agent a real reasoning step instead of a scripted movement rule, and we'd rather state that
-plainly than hide it — but runs no longer approach the multi-minute range for anything close
-to a typical demo-sized mix.
+1. Sign up or log in; the auth service returns a JWT scoped to an organization.
+2. Create a grid plan, place entry and exit points, and optionally trace a reference image.
+3. Choose a count for each persona and start a simulation.
+4. The simulation service streams one tick at a time over WebSocket, up to 60 ticks (with a 45-second cap per tick).
+5. At completion, Myriox returns the 25 hottest cells and compliance findings for the report panel.
 
 ## Repository layout
 
 ```text
 apps/
-  web/                Next.js frontend: landing page, dashboard, editor, live simulation UI
-  auth-service/       FastAPI email/password auth service
-  plan-service/       FastAPI plan CRUD and persona catalog
-  simulation-service/ LangGraph simulation engine and compliance auditor
+  web/                  Next.js frontend
+  auth-service/         FastAPI authentication service
+  plan-service/         FastAPI plan and persona service
+  simulation-service/   FastAPI + LangGraph simulation and auditing service
 packages/
-  mcp-plan-server/    MCP server for plan layout and zone access
-  shared-types/       Shared schema definitions for plans and simulation runs
+  mcp-plan-server/      Optional MCP server for saved plans
+  shared-types/         Shared grid schemas for TypeScript and Python
 infra/
-  bicep/              Azure infrastructure definitions
-  scripts/            Provisioning and seeding helpers
-demo/
-  floorplans/         Real, public-domain floor plans used for testing and the demo video
-docs/
-  architecture.md     Service map, data flow, and resource inventory
-  personas.md         Seed persona behavior model
-  building_codes/     Clauses used by the compliance auditor
+  bicep/                Azure resource definitions
+  scripts/              Provisioning and code-clause seeding helpers
+docs/                   Architecture, personas, and source code clauses
+demo/floorplans/        Public-domain floor-plan reference images and provenance
 ```
 
-## Features
+## Run locally
 
-- Grid editor for drawing walls, doors, ramps, stairs, elevators, service points, and entry
-  and exit markers, with an image-overlay mode for tracing over an uploaded reference plan.
-- Persona-driven simulation with five seed personas: rushed commuter, wheelchair user,
-  parent with stroller, delivery worker, and elderly visitor.
-- RAG-backed compliance audit that cites specific ADA and IFC clauses rather than issuing
-  vague warnings.
-- Multi-tenant data model partitioned by organization.
-- MCP plan server for tooling integrations that need plan layouts without depending on the
-  authoring path.
+### Prerequisites
 
-## Authentication model
+- Node.js 22+ and npm (the production web image uses Node 22)
+- Python 3.11+ and `venv` (the service images use Python 3.12)
+- An Azure Cosmos DB account and Azure OpenAI deployments for a full simulation run
 
-Myriox uses its own email/password flow instead of a third-party auth provider.
+The frontend and services load local environment files only; credentials are never committed.
 
-- `auth-service` owns the `users` container and exposes signup, login, and profile endpoints.
-- Passwords are hashed with bcrypt.
-- Successful login returns an HS256 JWT with `sub`, `org_id`, `email`, and `name` claims.
-- The same JWT secret is shared with the plan and simulation services.
-- The frontend keeps the token client-side and mirrors it into a cookie for navigation guards.
+### 1. Create environment files
 
-## Local development
+```bash
+cp apps/auth-service/.env.example apps/auth-service/.env
+cp apps/plan-service/.env.example apps/plan-service/.env
+cp apps/simulation-service/.env.example apps/simulation-service/.env
+cp apps/web/.env.example apps/web/.env.local
+```
 
-Prerequisites:
+Set the Cosmos endpoint, key, and database in all three backend files. Set the same values for `MYRIOX_AUTH_JWT_SECRET` and `MYRIOX_AUTH_JWT_ISSUER` in each backend file. The simulation service also needs Azure OpenAI credentials and deployment names.
 
-- Python 3.11+ for the FastAPI services and MCP server
-- Node.js 18+ for the web app
-- Your own Azure OpenAI + Cosmos DB credentials in each service's `.env` file (see
-  "Configuration" below) — none are checked into the repo
+The defaults in the example files work together locally:
 
-Start each service from its own terminal:
+| Setting | Local default |
+| --- | --- |
+| Auth service | `http://localhost:8030` |
+| Plan service | `http://localhost:8010` |
+| Simulation service | `http://localhost:8020` |
+| Web app | `http://localhost:3000` |
 
-### Auth service
+### 2. Start the backend services
+
+Open a terminal for each service:
 
 ```bash
 cd apps/auth-service
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8030
 ```
 
-### Plan service
-
 ```bash
 cd apps/plan-service
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8010
 ```
 
-### Simulation service
-
 ```bash
 cd apps/simulation-service
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8020
 ```
 
-### Frontend
+Each service exposes a health endpoint: `/health`.
+
+### 3. Start the web app
 
 ```bash
 cd apps/web
@@ -169,66 +135,70 @@ npm install
 npm run dev
 ```
 
-### MCP plan server
+Open [http://localhost:3000](http://localhost:3000), create an account, then create a plan and start a run.
+
+## Configuration reference
+
+| File | Required values |
+| --- | --- |
+| `apps/auth-service/.env` | Cosmos settings, JWT secret/issuer, allowed CORS origins |
+| `apps/plan-service/.env` | Cosmos settings, JWT secret/issuer, allowed CORS origins |
+| `apps/simulation-service/.env` | Cosmos settings, Azure OpenAI endpoint/key/API version/deployments, plan-service URL, JWT secret/issuer, CORS origins |
+| `apps/web/.env.local` | Auth base URL, plan-service base URL, simulation WebSocket URL |
+
+The default Azure OpenAI deployment aliases are `agent-reasoning`, `report-synthesis`, and `text-embedding-3-large`. Their expected values are defined in [apps/simulation-service/.env.example](apps/simulation-service/.env.example).
+
+## API surface
+
+| Service | Endpoint | Purpose |
+| --- | --- | --- |
+| Auth | `POST /api/auth/signup` | Create an organization and user, return a JWT |
+| Auth | `POST /api/auth/login` | Authenticate and return a JWT |
+| Auth | `GET /api/auth/me` | Return the current user |
+| Plan | `GET, POST /api/plans` | List or create organization-scoped plans |
+| Plan | `GET /api/plans/{plan_id}` | Read a plan |
+| Plan | `GET /api/personas` | List the built-in personas |
+| Simulation | `WS /api/simulations/ws` | Stream a simulation after sending `plan_id`, `persona_mix`, and `token` |
+
+Plan endpoints require `Authorization: Bearer <JWT>`. Because browser WebSockets cannot attach that header directly, the simulation handshake sends the token in its first JSON message.
+
+## Azure infrastructure
+
+The Bicep template provisions the foundation used by the app: Container Registry, Container Apps environment, Cosmos DB with vector search, Blob Storage, Key Vault, Log Analytics, and Azure OpenAI deployments.
+
+```bash
+./infra/scripts/provision.sh
+(cd apps/simulation-service && source .venv/bin/activate && python ../../infra/scripts/seed_code_clauses.py)
+```
+
+The provisioning script targets `rg-myriox-dev` in `eastus2` and expects an authenticated Azure CLI session with permission to create those resources. It provisions infrastructure and stores Cosmos/OpenAI keys in Key Vault; it does not deploy application containers. Run the clause-seeding command after copying and configuring the simulation service `.env` file.
+
+## Optional: run the MCP plan server
 
 ```bash
 cd packages/mcp-plan-server
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 python server.py
 ```
 
-When the frontend is running, open http://localhost:3000.
+It exposes `list_plans`, `get_grid_layout`, and `get_zone_metadata` over MCP stdio. See [packages/mcp-plan-server/README.md](packages/mcp-plan-server/README.md) for the client configuration.
 
-## Configuration
+## Production notes
 
-Each service reads its environment from a local file:
+Before relying on this beyond a prototype:
 
-- `apps/auth-service/.env`
-- `apps/plan-service/.env`
-- `apps/simulation-service/.env`
-- `apps/web/.env.local`
+1. Replace the internal plan-service lookup with service-to-service authentication.
+2. Move reference-image data from inline plan documents to Blob Storage/CDN.
+3. Add account recovery, email verification, team membership, and a production JWT-rotation process.
+4. Use managed identities for data and model access where supported; avoid long-lived API keys.
+5. Validate findings with qualified building and accessibility professionals.
 
-Those files stay local and are not committed. The shared JWT secret and Azure values must
-match across the backend services.
+## Further reading
 
-## Azure deployment
-
-The repository already includes the Azure resources used for the demo environment:
-
-- Azure Container Apps for the web, auth, plan, and simulation services
-- Cosmos DB for users, plans, runs, agent events, and clauses
-- Azure OpenAI for persona reasoning and report synthesis
-
-Reference floor-plan images are currently stored as compressed data URIs inline on the plan
-document rather than in blob storage — see the "Known simplifications" note in
-[docs/architecture.md](docs/architecture.md) for why, and what a production version would
-change.
-
-See [docs/architecture.md](docs/architecture.md) for the as-built resource inventory and
-service data flow.
-
-## Re-provisioning infra
-
-```bash
-./infra/scripts/provision.sh
-source apps/simulation-service/.venv/bin/activate
-python infra/scripts/seed_code_clauses.py
-```
-
-## Before production
-
-1. Rotate `MYRIOX_AUTH_JWT_SECRET` and update the shared secret everywhere it is used.
-2. Move `MYRIOX_ENVIRONMENT` to `production` on the plan and simulation services when
-   anonymous browsing should stop.
-3. Add service-to-service authentication for internal plan lookups.
-4. Move reference-image storage to Azure Blob Storage + CDN instead of inline data URIs.
-5. Add a custom domain and TLS.
-6. Add billing and scale tuning once real usage patterns are known.
-
-## More detail
-
-- [Architecture overview](docs/architecture.md)
+- [Architecture and known simplifications](docs/architecture.md)
 - [Persona definitions](docs/personas.md)
-- [ADA clauses used by the auditor](docs/building_codes/ada_clauses.json)
-- [Pitch deck PDF](PITCH_DECK.pdf)
+- [ADA code clauses used by the auditor](docs/building_codes/ada_clauses.json)
+- [Floor-plan image sources](demo/floorplans/SOURCES.md)
+- [Pitch deck](PITCH_DECK.pdf)
